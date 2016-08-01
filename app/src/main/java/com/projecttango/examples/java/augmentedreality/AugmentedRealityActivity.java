@@ -28,8 +28,10 @@ import com.google.atap.tangoservice.TangoPoseData;
 import com.google.atap.tangoservice.TangoXyzIjData;
 
 import android.app.Activity;
+import android.graphics.Bitmap;
 import android.opengl.GLSurfaceView;
 import android.os.Bundle;
+import android.os.Environment;
 import android.util.Log;
 import android.view.Surface;
 import android.view.View;
@@ -37,12 +39,26 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
 
+import org.joml.Matrix3d;
+import org.joml.Matrix4d;
+import org.joml.Vector3d;
+import org.rajawali3d.math.Matrix4;
 import org.rajawali3d.scene.ASceneFrameCallback;
 import org.rajawali3d.surface.RajawaliSurfaceView;
 
+import java.io.DataOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.nio.ByteBuffer;
+import java.nio.FloatBuffer;
+import java.nio.channels.FileChannel;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import com.projecttango.rajawali.DeviceExtrinsics;
+import com.projecttango.tangosupport.TangoPointCloudManager;
 import com.projecttango.tangosupport.TangoSupport;
 
 /**
@@ -70,9 +86,21 @@ public class AugmentedRealityActivity extends Activity {
     private static final String TAG = AugmentedRealityActivity.class.getSimpleName();
     private static final int INVALID_TEXTURE_ID = 0;
 
+
+    // Configure the Tango coordinate frame pair
+    private static final ArrayList<TangoCoordinateFramePair> FRAME_PAIRS =
+            new ArrayList<TangoCoordinateFramePair>();
+
+    {
+        FRAME_PAIRS.add(new TangoCoordinateFramePair(
+                TangoPoseData.COORDINATE_FRAME_START_OF_SERVICE,
+                TangoPoseData.COORDINATE_FRAME_DEVICE));
+    }
+
     private RajawaliSurfaceView mSurfaceView;
     private AugmentedRealityRenderer mRenderer;
     private TangoCameraIntrinsics mIntrinsics;
+    private DeviceExtrinsics mExtrinsics;
     private Tango mTango;
     private TangoConfig mConfig;
     private boolean mIsConnected = false;
@@ -83,7 +111,9 @@ public class AugmentedRealityActivity extends Activity {
     private int mConnectedTextureIdGlThread = INVALID_TEXTURE_ID;
     private AtomicBoolean mIsFrameAvailableTangoThread = new AtomicBoolean(false);
     private double mRgbTimestampGlThread;
-    private ViewGroup mLayout;
+
+    private Object mPointCloudLock = new Object();
+    private TangoPointCloudManager mPointCloudManager;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -92,6 +122,7 @@ public class AugmentedRealityActivity extends Activity {
         mSurfaceView = (RajawaliSurfaceView) findViewById(R.id.surfaceview);
         mRenderer = new AugmentedRealityRenderer(this);
         setupRenderer();
+        mPointCloudManager = new TangoPointCloudManager();
 
         Button doButton = (Button) findViewById(R.id.button2);
         doButton.setOnClickListener(new View.OnClickListener() {
@@ -100,6 +131,7 @@ public class AugmentedRealityActivity extends Activity {
                 mRenderer.setScreenShot();
             }
         });
+
     }
 
     @Override
@@ -149,11 +181,14 @@ public class AugmentedRealityActivity extends Activity {
                         synchronized (AugmentedRealityActivity.this) {
                             mIntrinsics = mTango.getCameraIntrinsics(
                                     TangoCameraIntrinsics.TANGO_CAMERA_COLOR);
+                            Log.d("Intrinsics", mIntrinsics.width + ", " + mIntrinsics.height);
+
                         }
                     }
                 });
             }
         });
+        mTango.getCameraIntrinsics(TangoCameraIntrinsics.TANGO_CAMERA_COLOR);
     }
 
     @Override
@@ -188,6 +223,7 @@ public class AugmentedRealityActivity extends Activity {
         // low latency IMU integration.
         TangoConfig config = tango.getConfig(TangoConfig.CONFIG_TYPE_DEFAULT);
         config.putBoolean(TangoConfig.KEY_BOOLEAN_COLORCAMERA, true);
+        config.putBoolean(TangoConfig.KEY_BOOLEAN_DEPTH, true);
         // NOTE: Low latency integration is necessary to achieve a precise alignment of
         // virtual objects with the RBG image and produce a good AR effect.
         config.putBoolean(TangoConfig.KEY_BOOLEAN_LOWLATENCYIMUINTEGRATION, true);
@@ -201,7 +237,8 @@ public class AugmentedRealityActivity extends Activity {
     private void setTangoListeners() {
         // No need to add any coordinate frame pairs since we aren't using pose data from callbacks.
         ArrayList<TangoCoordinateFramePair> framePairs = new ArrayList<TangoCoordinateFramePair>();
-
+        framePairs.add(new TangoCoordinateFramePair(TangoPoseData.COORDINATE_FRAME_START_OF_SERVICE,
+                TangoPoseData.COORDINATE_FRAME_DEVICE));
         mTango.connectListener(framePairs, new OnTangoUpdateListener() {
             @Override
             public void onPoseAvailable(TangoPoseData pose) {
@@ -211,6 +248,10 @@ public class AugmentedRealityActivity extends Activity {
             @Override
             public void onXyzIjAvailable(TangoXyzIjData xyzIj) {
                 // We are not using onXyzIjAvailable for this app.
+                synchronized (mPointCloudLock) {
+                    mPointCloudManager.updateXyzIj(xyzIj);
+                }
+                Log.d("XYZIJ", "Update");
             }
 
             @Override
@@ -241,7 +282,24 @@ public class AugmentedRealityActivity extends Activity {
                 }
             }
         });
+        mExtrinsics = setupExtrinsics();
     }
+
+    private DeviceExtrinsics setupExtrinsics() {
+        TangoCoordinateFramePair framePair = new TangoCoordinateFramePair();
+        framePair.baseFrame = TangoPoseData.COORDINATE_FRAME_IMU;
+        framePair.targetFrame = TangoPoseData.COORDINATE_FRAME_CAMERA_COLOR;
+        TangoPoseData imuTColorCameraPose = mTango.getPoseAtTime(0.0, framePair);
+
+        framePair.targetFrame = TangoPoseData.COORDINATE_FRAME_CAMERA_DEPTH;
+        TangoPoseData imuTDepthCameraPose = mTango.getPoseAtTime(0.0, framePair);
+
+        framePair.targetFrame = TangoPoseData.COORDINATE_FRAME_DEVICE;
+        TangoPoseData imuTDevicePose = mTango.getPoseAtTime(0.0, framePair);
+
+        return new DeviceExtrinsics(imuTDevicePose, imuTColorCameraPose, imuTDepthCameraPose);
+    }
+
 
     /**
      * Connects the view and renderer to the color camara and callbacks.
@@ -263,6 +321,13 @@ public class AugmentedRealityActivity extends Activity {
                     // Don't execute any tango API actions if we're not connected to the service.
                     if (!mIsConnected) {
                         return;
+                    }
+
+                    TangoXyzIjData pointCloud = mPointCloudManager.getLatestXyzIj();
+                    if (pointCloud != null) {
+                        TangoPoseData pointCloudPose =
+                                mTango.getPoseAtTime(pointCloud.timestamp, FRAME_PAIRS.get(0));
+                        mRenderer.updatePointCloud(pointCloud, pointCloudPose, mExtrinsics, mIntrinsics);
                     }
 
                     // Set-up scene camera projection to match RGB camera intrinsics.

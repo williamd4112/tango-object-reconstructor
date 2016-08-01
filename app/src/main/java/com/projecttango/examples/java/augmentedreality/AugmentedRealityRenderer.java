@@ -21,6 +21,7 @@ import com.google.atap.tangoservice.TangoPoseData;
 import android.content.Context;
 
 import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.opengl.GLES20;
 import android.os.Environment;
 import android.util.Log;
@@ -28,6 +29,9 @@ import android.view.MotionEvent;
 import android.view.animation.LinearInterpolator;
 import android.widget.Toast;
 
+import org.joml.Matrix3d;
+import org.joml.Matrix4d;
+import org.joml.Vector3d;
 import org.rajawali3d.Object3D;
 import org.rajawali3d.animation.Animation;
 import org.rajawali3d.animation.Animation3D;
@@ -53,16 +57,20 @@ import javax.microedition.khronos.opengles.GL10;
 import javax.microedition.khronos.opengles.GL11Ext;
 import javax.microedition.khronos.opengles.GL11ExtensionPack;
 
+import com.google.atap.tangoservice.TangoXyzIjData;
 import com.projecttango.rajawali.DeviceExtrinsics;
 import com.projecttango.rajawali.Pose;
 import com.projecttango.rajawali.ScenePoseCalculator;
+import com.projecttango.rajawali.renderables.PointCloud;
 
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.ShortBuffer;
+import java.util.Arrays;
 
 /**
  * Renderer that implements a basic augmented reality scene using Rajawali.
@@ -73,6 +81,10 @@ import java.nio.ShortBuffer;
 public class AugmentedRealityRenderer extends RajawaliRenderer {
     private static final String TAG = AugmentedRealityRenderer.class.getSimpleName();
 
+    private static final float CAMERA_NEAR = 0.01f;
+    private static final float CAMERA_FAR = 200f;
+    private static final int MAX_NUMBER_OF_POINTS = 60000;
+
     // Rajawali texture used to render the Tango color camera.
     private ATexture mTangoCameraTexture;
 
@@ -81,6 +93,12 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
 
     private boolean screenshot;
     private Bitmap lastScreenshot;
+    private static int framebufferWidth = 1920;
+    private static int framebufferHeight = 942;
+    private PointCloud mPointCloud;
+    private TangoXyzIjData mPointCloudXYZij;
+    private TangoCameraIntrinsics mIntrinsics;
+    private float[][] mPointCloudBuffer = new float[framebufferWidth][framebufferHeight * 3];
 
     /**
      * オフスクリーン描画用のフレームバッファオブジェクトを保持します。
@@ -114,6 +132,97 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
         }
     }
 
+    private void savePointCloudBuffer(){
+        try {
+            File file = new File(Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_PICTURES), "openglscreenshots");
+            file.mkdirs();
+            String path = file.toString();
+            FileOutputStream out = new FileOutputStream(path + "/" + "pointcloud" + ".pcl");
+            DataOutputStream dout = new DataOutputStream(out);
+
+            ByteBuffer buffer = ByteBuffer.allocate(4 * framebufferWidth * framebufferHeight * 3);
+            FloatBuffer floatBuffer = buffer.asFloatBuffer();
+            for(float[] row : mPointCloudBuffer)
+            {
+                floatBuffer.put(row);
+            }
+            dout.write(buffer.array());
+            out.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void samplePointCloudAround(int pixel_x, int pixel_y, float px, float py, float pz)
+    {
+        int image_width = framebufferWidth;
+        int image_height = framebufferHeight;
+        int kWindowSize = 7;
+
+        // Set the neighbour pixels to same color.
+        for (int a = -kWindowSize; a <= kWindowSize; ++a) {
+            for (int b = -kWindowSize; b <= kWindowSize; ++b) {
+                if (pixel_x >= image_width || pixel_y >= image_height || pixel_x < 0 ||
+                        pixel_y < 0) {
+                    continue;
+                }
+
+                int bx = pixel_x * 3;
+                int by = pixel_y;
+                if (bx >= 0 && bx < image_width * 3 && by >= 0 && by < image_height) {
+                    mPointCloudBuffer[by][bx] = px;
+                    mPointCloudBuffer[by][bx + 1] = py;
+                    mPointCloudBuffer[by][bx + 2] = pz;
+                }
+            }
+        }
+    }
+
+    private void savePointCloud(TangoXyzIjData xyzIj)
+    {
+        Log.d("PointCloud", xyzIj.xyzCount + "");
+        float fx = (float) mIntrinsics.fx;
+        float fy = (float) mIntrinsics.fy;
+        float cx = (float) mIntrinsics.cx;
+        float cy = (float) mIntrinsics.cy;
+
+        int width = (mIntrinsics.width);
+        int height = (mIntrinsics.height);
+
+        for(float[] row : mPointCloudBuffer)
+            Arrays.fill(row, 0);
+
+        Matrix4 modelView = getPointCloudModelViewMatrix();
+
+        for (int k = 0; k < xyzIj.xyzCount * 3; k += 3) {
+
+            Matrix4d mat4 = new Matrix4d();
+            mat4.set(modelView.getDoubleValues());
+            Matrix3d trans = new Matrix3d(mat4);
+            Vector3d pos = new Vector3d(xyzIj.xyz.get(k), xyzIj.xyz.get(k + 1), xyzIj.xyz.get(k + 2));
+            pos = trans.transform(pos);
+
+            float X = (float)pos.x;
+            float Y = (float)pos.x;
+            float Z = (float)pos.x;
+
+            int pixelX = (int)(fx * (X / Z) + cx);
+            int pixelY = (int)(fy * (Y / Z) + cy);
+
+            //mPointCloudBuffer[y][x * 3] = X;
+            //mPointCloudBuffer[y][x * 3 + 1] = Y;
+            //mPointCloudBuffer[y][x * 3 + 2] = Z;
+            samplePointCloudAround(pixelX, pixelY, X, Y, Z);
+        }
+        Log.d("PointCloud", "OK");
+    }
+
+    public Matrix4 getPointCloudModelViewMatrix()
+    {
+        return mPointCloud.getModelViewMatrix();
+    }
+
     @Override
     protected void initScene() {
         // Create a quad covering the whole background and assign a texture to it where the
@@ -134,73 +243,12 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
         }
         getCurrentScene().addChildAt(backgroundQuad, 0);
 
-//        // Add a directional light in an arbitrary direction.
-//        DirectionalLight light = new DirectionalLight(1, 0.2, -1);
-//        light.setColor(1, 1, 1);
-//        light.setPower(0.8f);
-//        light.setPosition(3, 2, 4);
-//        getCurrentScene().addLight(light);
-//
-//        // Create sphere with earth texture and place it in space 3m forward from the origin.
-//        Material earthMaterial = new Material();
-//        try {
-//            Texture t = new Texture("earth", R.drawable.earth);
-//            earthMaterial.addTexture(t);
-//        } catch (ATexture.TextureException e) {
-//            Log.e(TAG, "Exception generating earth texture", e);
-//        }
-//        earthMaterial.setColorInfluence(0);
-//        earthMaterial.enableLighting(true);
-//        earthMaterial.setDiffuseMethod(new DiffuseMethod.Lambert());
-//        Object3D earth = new Sphere(0.4f, 20, 20);
-//        earth.setMaterial(earthMaterial);
-//        earth.setPosition(0, 0, -3);
-//        getCurrentScene().addChild(earth);
-//
-//        // Rotate around its Y axis
-//        Animation3D animEarth = new RotateOnAxisAnimation(Vector3.Axis.Y, 0, -360);
-//        animEarth.setInterpolator(new LinearInterpolator());
-//        animEarth.setDurationMilliseconds(60000);
-//        animEarth.setRepeatMode(Animation.RepeatMode.INFINITE);
-//        animEarth.setTransformable3D(earth);
-//        getCurrentScene().registerAnimation(animEarth);
-//        animEarth.play();
-//
-//        // Create sphere with moon texture.
-//        Material moonMaterial = new Material();
-//        try {
-//            Texture t = new Texture("moon", R.drawable.moon);
-//            moonMaterial.addTexture(t);
-//        } catch (ATexture.TextureException e) {
-//            Log.e(TAG, "Exception generating moon texture", e);
-//        }
-//        moonMaterial.setColorInfluence(0);
-//        moonMaterial.enableLighting(true);
-//        moonMaterial.setDiffuseMethod(new DiffuseMethod.Lambert());
-//        Object3D moon = new Sphere(0.1f, 20, 20);
-//        moon.setMaterial(moonMaterial);
-//        moon.setPosition(0, 0, -1);
-//        getCurrentScene().addChild(moon);
-//
-//        // Rotate the moon around its Y axis
-//        Animation3D animMoon = new RotateOnAxisAnimation(Vector3.Axis.Y, 0, -360);
-//        animMoon.setInterpolator(new LinearInterpolator());
-//        animMoon.setDurationMilliseconds(60000);
-//        animMoon.setRepeatMode(Animation.RepeatMode.INFINITE);
-//        animMoon.setTransformable3D(moon);
-//        getCurrentScene().registerAnimation(animMoon);
-//        animMoon.play();
-//
-//        // Make the moon orbit around the earth, the first two parameters are the focal point and
-//        // periapsis of the orbit.
-//        Animation3D translationMoon =  new EllipticalOrbitAnimation3D(new Vector3(0, 0, -5),
-//                new Vector3(0, 0, -1), Vector3.getAxisVector(Vector3.Axis.Y), 0,
-//                360, EllipticalOrbitAnimation3D.OrbitDirection.COUNTERCLOCKWISE);
-//        translationMoon.setDurationMilliseconds(60000);
-//        translationMoon.setRepeatMode(Animation.RepeatMode.INFINITE);
-//        translationMoon.setTransformable3D(moon);
-//        getCurrentScene().registerAnimation(translationMoon);
-//        translationMoon.play();
+        mPointCloud = new PointCloud(MAX_NUMBER_OF_POINTS);
+        mPointCloud.setVisible(false);
+        getCurrentScene().addChild(mPointCloud);
+        getCurrentCamera().setNearPlane(CAMERA_NEAR);
+        getCurrentCamera().setFarPlane(CAMERA_FAR);
+        getCurrentCamera().setFieldOfView(37.5);
     }
 
     /**
@@ -218,6 +266,22 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
         // quaternions.
         getCurrentCamera().setRotation(quaternion.conjugate());
         getCurrentCamera().setPosition(translation[0], translation[1], translation[2]);
+    }
+
+    /**
+     * Updates the rendered point cloud. For this, we need the point cloud data and the device pose
+     * at the time the cloud data was acquired.
+     * NOTE: This needs to be called from the OpenGL rendering thread.
+     */
+    public void updatePointCloud(TangoXyzIjData xyzIjData, TangoPoseData devicePose,
+                                 DeviceExtrinsics extrinsics, TangoCameraIntrinsics intrinsics) {
+        Pose pointCloudPose =
+                ScenePoseCalculator.toDepthCameraOpenGlPose(devicePose, extrinsics);
+        mPointCloud.updateCloud(xyzIjData.xyzCount, xyzIjData.xyz);
+        mPointCloud.setPosition(pointCloudPose.getPosition());
+        mPointCloud.setOrientation(pointCloudPose.getOrientation());
+        mPointCloudXYZij = xyzIjData;
+        mIntrinsics = intrinsics;
     }
 
     @Override
@@ -239,8 +303,6 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
             // ウィンドウシステムが提供するフレームバッファへ切り替えます。
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
 
-            int framebufferWidth = 1280;
-            int framebufferHeight = 720;
             int mViewportWidth = framebufferWidth;
             int mViewportHeight = framebufferHeight;
 
@@ -269,9 +331,12 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
             bitmap.copyPixelsFromBuffer(sb);
             lastScreenshot = bitmap;
             saveScreenshot(lastScreenshot);
+            savePointCloud(mPointCloudXYZij);
+            savePointCloudBuffer();
 
             screenshot = false;
             GLES20.glViewport(0, 0, this.getViewportWidth(), this.getViewportHeight());
+            Log.d("Screenshot", "Done");
         }
         super.onRenderFrame(gl);
     }
@@ -293,8 +358,13 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
     public void onRenderSurfaceSizeChanged(GL10 gl, int width, int height) {
         super.onRenderSurfaceSizeChanged(gl, width, height);
         mSceneCameraConfigured = false;
-        mFramebufferObject.setup(1280, 720);
+        mFramebufferObject.setup(width, height);
+        framebufferWidth = width;
+        framebufferHeight = height;
+        Log.d("Size", width + ", " + height);
         mShader.setFrameSize(width, height);
+        // ウィンドウシステムが提供するフレームバッファへ切り替えます。
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
     }
 
     public boolean isSceneCameraConfigured() {

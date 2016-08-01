@@ -7,5 +7,5 @@
         android:layout_height="wrap_content"
         android:text="New Button"
         android:id="@+id/button2"
-        android:layout_gravity="center_horizontal|bottom" />
+        android:layout_gravity="left|bottom" />
 </FrameLayout>
