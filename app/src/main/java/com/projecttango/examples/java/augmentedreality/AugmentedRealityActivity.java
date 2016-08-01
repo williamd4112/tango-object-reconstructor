@@ -112,7 +112,6 @@ public class AugmentedRealityActivity extends Activity {
     private AtomicBoolean mIsFrameAvailableTangoThread = new AtomicBoolean(false);
     private double mRgbTimestampGlThread;
 
-    private Object mPointCloudLock = new Object();
     private TangoPointCloudManager mPointCloudManager;
 
     @Override
@@ -132,6 +131,13 @@ public class AugmentedRealityActivity extends Activity {
             }
         });
 
+        Button toggleButton = (Button) findViewById(R.id.savePointCloudButton);
+        toggleButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                mRenderer.togglePointcloud();
+            }
+        });
     }
 
     @Override
@@ -248,7 +254,7 @@ public class AugmentedRealityActivity extends Activity {
             @Override
             public void onXyzIjAvailable(TangoXyzIjData xyzIj) {
                 // We are not using onXyzIjAvailable for this app.
-                synchronized (mPointCloudLock) {
+                synchronized (AugmentedRealityRenderer.lock) {
                     mPointCloudManager.updateXyzIj(xyzIj);
                 }
                 Log.d("XYZIJ", "Update");

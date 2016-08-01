@@ -70,6 +70,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.ShortBuffer;
+import java.nio.channels.FileChannel;
 import java.util.Arrays;
 
 /**
@@ -80,6 +81,8 @@ import java.util.Arrays;
  */
 public class AugmentedRealityRenderer extends RajawaliRenderer {
     private static final String TAG = AugmentedRealityRenderer.class.getSimpleName();
+
+    public static Object lock = new Object();
 
     private static final float CAMERA_NEAR = 0.01f;
     private static final float CAMERA_FAR = 200f;
@@ -95,10 +98,12 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
     private Bitmap lastScreenshot;
     private static int framebufferWidth = 1920;
     private static int framebufferHeight = 942;
+    private static int depthbufferWidth = 1280;
+    private static int depthbufferHeight = 720;
     private PointCloud mPointCloud;
     private TangoXyzIjData mPointCloudXYZij;
     private TangoCameraIntrinsics mIntrinsics;
-    private float[][] mPointCloudBuffer = new float[framebufferWidth][framebufferHeight * 3];
+    private float[][] mPointCloudBuffer = new float[depthbufferHeight][depthbufferWidth * 3];
 
     /**
      * オフスクリーン描画用のフレームバッファオブジェクトを保持します。
@@ -138,10 +143,10 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
                     Environment.DIRECTORY_PICTURES), "openglscreenshots");
             file.mkdirs();
             String path = file.toString();
-            FileOutputStream out = new FileOutputStream(path + "/" + "pointcloud" + ".pcl");
+            FileOutputStream out = new FileOutputStream(path + "/" + "pointcloud" + ".dat");
             DataOutputStream dout = new DataOutputStream(out);
 
-            ByteBuffer buffer = ByteBuffer.allocate(4 * framebufferWidth * framebufferHeight * 3);
+            ByteBuffer buffer = ByteBuffer.allocate(4 * mIntrinsics.width * mIntrinsics.height * 3);
             FloatBuffer floatBuffer = buffer.asFloatBuffer();
             for(float[] row : mPointCloudBuffer)
             {
@@ -156,8 +161,8 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
 
     private void samplePointCloudAround(int pixel_x, int pixel_y, float px, float py, float pz)
     {
-        int image_width = framebufferWidth;
-        int image_height = framebufferHeight;
+        int image_width = mIntrinsics.width;
+        int image_height = mIntrinsics.height;
         int kWindowSize = 7;
 
         // Set the neighbour pixels to same color.
@@ -187,6 +192,7 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
         float cx = (float) mIntrinsics.cx;
         float cy = (float) mIntrinsics.cy;
 
+        Log.d("Intrinsic", mIntrinsics.width + ", " + mIntrinsics.height);
         int width = (mIntrinsics.width);
         int height = (mIntrinsics.height);
 
@@ -196,6 +202,9 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
         Matrix4 modelView = getPointCloudModelViewMatrix();
 
         for (int k = 0; k < xyzIj.xyzCount * 3; k += 3) {
+            float X = (float) xyzIj.xyz.get(k);
+            float Y = (float) xyzIj.xyz.get(k + 1);
+            float Z = (float) xyzIj.xyz.get(k + 2);
 
             Matrix4d mat4 = new Matrix4d();
             mat4.set(modelView.getDoubleValues());
@@ -203,17 +212,14 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
             Vector3d pos = new Vector3d(xyzIj.xyz.get(k), xyzIj.xyz.get(k + 1), xyzIj.xyz.get(k + 2));
             pos = trans.transform(pos);
 
-            float X = (float)pos.x;
-            float Y = (float)pos.x;
-            float Z = (float)pos.x;
-
+            Log.d("Point", X + ", " + Y + ", " + Z);
             int pixelX = (int)(fx * (X / Z) + cx);
             int pixelY = (int)(fy * (Y / Z) + cy);
 
-            //mPointCloudBuffer[y][x * 3] = X;
-            //mPointCloudBuffer[y][x * 3 + 1] = Y;
-            //mPointCloudBuffer[y][x * 3 + 2] = Z;
-            samplePointCloudAround(pixelX, pixelY, X, Y, Z);
+            //mPointCloudBuffer[pixelY][pixelX * 3] = (float) pos.x;
+            //mPointCloudBuffer[pixelY][pixelX * 3 + 1] = (float) pos.y;
+            //mPointCloudBuffer[pixelY][pixelX * 3 + 2] = (float) pos.z;
+            samplePointCloudAround(pixelX, pixelY, (float) pos.x, (float) pos.y, (float) pos.z);
         }
         Log.d("PointCloud", "OK");
     }
@@ -244,7 +250,6 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
         getCurrentScene().addChildAt(backgroundQuad, 0);
 
         mPointCloud = new PointCloud(MAX_NUMBER_OF_POINTS);
-        mPointCloud.setVisible(false);
         getCurrentScene().addChild(mPointCloud);
         getCurrentCamera().setNearPlane(CAMERA_NEAR);
         getCurrentCamera().setFarPlane(CAMERA_FAR);
@@ -284,59 +289,67 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
         mIntrinsics = intrinsics;
     }
 
+    public void togglePointcloud()
+    {
+        mPointCloud.setVisible(!mPointCloud.isVisible());
+    }
+
     @Override
     public void onRenderFrame(GL10 gl) {
-        if(screenshot){
-            ////////////////////////////////////////////////////////////
-            // オフスクリーンレンダリング
+        synchronized (lock)
+        {
+            if(screenshot){
+                ////////////////////////////////////////////////////////////
+                // オフスクリーンレンダリング
 
-            // FBO へ切り替えます。
-            mFramebufferObject.enable();
-            GLES20.glViewport(0, 0, mFramebufferObject.getWidth(), mFramebufferObject.getHeight());
+                // FBO へ切り替えます。
+                mFramebufferObject.enable();
+                GLES20.glViewport(0, 0, mFramebufferObject.getWidth(), mFramebufferObject.getHeight());
 
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
-            mShader.draw(getTextureId());
+                GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
+                mShader.draw(getTextureId());
 
-            ////////////////////////////////////////////////////////////
-            // オンスクリーンレンダリング
+                ////////////////////////////////////////////////////////////
+                // オンスクリーンレンダリング
 
-            // ウィンドウシステムが提供するフレームバッファへ切り替えます。
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+                // ウィンドウシステムが提供するフレームバッファへ切り替えます。
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
 
-            int mViewportWidth = framebufferWidth;
-            int mViewportHeight = framebufferHeight;
+                int mViewportWidth = framebufferWidth;
+                int mViewportHeight = framebufferHeight;
 
-            int screenshotSize = mViewportWidth * mViewportHeight;
-            ByteBuffer bb = ByteBuffer.allocateDirect(screenshotSize * 4);
-            bb.order(ByteOrder.nativeOrder());
+                int screenshotSize = mViewportWidth * mViewportHeight;
+                ByteBuffer bb = ByteBuffer.allocateDirect(screenshotSize * 4);
+                bb.order(ByteOrder.nativeOrder());
 
-            GLES20.glReadPixels(0, 0, mViewportWidth, mViewportHeight, GL10.GL_RGBA, GL10.GL_UNSIGNED_BYTE, bb);
-            int pixelsBuffer[] = new int[screenshotSize];
-            bb.asIntBuffer().get(pixelsBuffer);
-            bb = null;
-            Bitmap bitmap = Bitmap.createBitmap(mViewportWidth, mViewportHeight, Bitmap.Config.RGB_565);
-            bitmap.setPixels(pixelsBuffer, screenshotSize-mViewportWidth, -mViewportWidth, 0, 0, mViewportWidth, mViewportHeight);
-            pixelsBuffer = null;
+                GLES20.glReadPixels(0, 0, mViewportWidth, mViewportHeight, GL10.GL_RGBA, GL10.GL_UNSIGNED_BYTE, bb);
+                int pixelsBuffer[] = new int[screenshotSize];
+                bb.asIntBuffer().get(pixelsBuffer);
+                bb = null;
+                Bitmap bitmap = Bitmap.createBitmap(mViewportWidth, mViewportHeight, Bitmap.Config.RGB_565);
+                bitmap.setPixels(pixelsBuffer, screenshotSize-mViewportWidth, -mViewportWidth, 0, 0, mViewportWidth, mViewportHeight);
+                pixelsBuffer = null;
 
-            short sBuffer[] = new short[screenshotSize];
-            ShortBuffer sb = ShortBuffer.wrap(sBuffer);
-            bitmap.copyPixelsToBuffer(sb);
+                short sBuffer[] = new short[screenshotSize];
+                ShortBuffer sb = ShortBuffer.wrap(sBuffer);
+                bitmap.copyPixelsToBuffer(sb);
 
-            //Making created bitmap (from OpenGL points) compatible with Android bitmap
-            for (int i = 0; i < screenshotSize; ++i) {
-                short v = sBuffer[i];
-                sBuffer[i] = (short) (((v&0x1f) << 11) | (v&0x7e0) | ((v&0xf800) >> 11));
+                //Making created bitmap (from OpenGL points) compatible with Android bitmap
+                for (int i = 0; i < screenshotSize; ++i) {
+                    short v = sBuffer[i];
+                    sBuffer[i] = (short) (((v&0x1f) << 11) | (v&0x7e0) | ((v&0xf800) >> 11));
+                }
+                sb.rewind();
+                bitmap.copyPixelsFromBuffer(sb);
+                lastScreenshot = bitmap;
+                saveScreenshot(lastScreenshot);
+                savePointCloud(mPointCloudXYZij);
+                savePointCloudBuffer();
+
+                screenshot = false;
+                GLES20.glViewport(0, 0, this.getViewportWidth(), this.getViewportHeight());
+                Log.d("Screenshot", "Done");
             }
-            sb.rewind();
-            bitmap.copyPixelsFromBuffer(sb);
-            lastScreenshot = bitmap;
-            saveScreenshot(lastScreenshot);
-            savePointCloud(mPointCloudXYZij);
-            savePointCloudBuffer();
-
-            screenshot = false;
-            GLES20.glViewport(0, 0, this.getViewportWidth(), this.getViewportHeight());
-            Log.d("Screenshot", "Done");
         }
         super.onRenderFrame(gl);
     }
