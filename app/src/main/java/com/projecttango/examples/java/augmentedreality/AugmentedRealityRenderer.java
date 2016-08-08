@@ -47,6 +47,7 @@ import org.rajawali3d.materials.textures.StreamingTexture;
 import org.rajawali3d.materials.textures.Texture;
 import org.rajawali3d.math.Matrix4;
 import org.rajawali3d.math.Quaternion;
+import org.rajawali3d.math.vector.Vector2;
 import org.rajawali3d.math.vector.Vector3;
 import org.rajawali3d.primitives.ScreenQuad;
 import org.rajawali3d.primitives.Sphere;
@@ -81,8 +82,14 @@ import java.util.Arrays;
  */
 public class AugmentedRealityRenderer extends RajawaliRenderer {
     private static final String TAG = AugmentedRealityRenderer.class.getSimpleName();
-
+    private int savecnt = 0;
     public static Object lock = new Object();
+
+    static class WorldPointCloudSet
+    {
+        Matrix4 viewTworld;
+        ``
+    }
 
     private static final float CAMERA_NEAR = 0.01f;
     private static final float CAMERA_FAR = 200f;
@@ -100,6 +107,7 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
     private static int framebufferHeight = 942;
     private static int depthbufferWidth = 1280;
     private static int depthbufferHeight = 720;
+
     private PointCloud mPointCloud;
     private TangoXyzIjData mPointCloudXYZij;
     private TangoCameraIntrinsics mIntrinsics;
@@ -130,7 +138,7 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
                     Environment.DIRECTORY_PICTURES), "openglscreenshots");
             file.mkdirs();
             String path = file.toString();
-            FileOutputStream out = new FileOutputStream(path + "/" + "screenshot" + ".png");
+            FileOutputStream out = new FileOutputStream(path + "/" + "screenshot" + savecnt + ".png");
             screenshot.compress(Bitmap.CompressFormat.PNG, 90, out);
         } catch (Exception e) {
             e.printStackTrace();
@@ -143,7 +151,7 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
                     Environment.DIRECTORY_PICTURES), "openglscreenshots");
             file.mkdirs();
             String path = file.toString();
-            FileOutputStream out = new FileOutputStream(path + "/" + "pointcloud" + ".dat");
+            FileOutputStream out = new FileOutputStream(path + "/" + "pointcloud" + savecnt + ".dat");
             DataOutputStream dout = new DataOutputStream(out);
 
             ByteBuffer buffer = ByteBuffer.allocate(4 * mIntrinsics.width * mIntrinsics.height * 3);
@@ -184,42 +192,63 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
         }
     }
 
+    private Vector2 viewPointToScreen(TangoCameraIntrinsics intrinsics, float x, float y, float z)
+    {
+        float fx = (float) intrinsics.fx;
+        float fy = (float) intrinsics.fy;
+        float cx = (float) intrinsics.cx;
+        float cy = (float) intrinsics.cy;
+
+        int pixelX = (int)(fx * (x / z) + cx);
+        int pixelY = (int)(fy * (x / z) + cy);
+
+        return new Vector2(pixelX, pixelY);
+    }
+
+    private Vector3d pointWorldToView(Vector3d worldPos, Matrix4 worldToView)
+    {
+        Matrix4d mat4 = new Matrix4d();
+        mat4.set(worldToView.getDoubleValues());
+        Matrix3d worldToView3d = new Matrix3d(mat4);
+        Vector3d viewPos = worldToView3d.transform(worldPos);
+
+        return viewPos;
+    }
+
+    private boolean isInRegion(float px, float py, int x1, int y1, int x2, int y2)
+    {
+        return (px >= x1 && px <= x2 && py >= y1 && py <= y2);
+    }
+
     private void savePointCloud(TangoXyzIjData xyzIj)
     {
         Log.d("PointCloud", xyzIj.xyzCount + "");
-        float fx = (float) mIntrinsics.fx;
-        float fy = (float) mIntrinsics.fy;
-        float cx = (float) mIntrinsics.cx;
-        float cy = (float) mIntrinsics.cy;
-
         Log.d("Intrinsic", mIntrinsics.width + ", " + mIntrinsics.height);
-        int width = (mIntrinsics.width);
-        int height = (mIntrinsics.height);
 
         for(float[] row : mPointCloudBuffer)
             Arrays.fill(row, 0);
 
         Matrix4 modelView = getPointCloudModelViewMatrix();
+        Matrix4d mat4 = new Matrix4d();
+        mat4.set(modelView.getDoubleValues());
+        Matrix3d viewTworld = new Matrix3d(mat4);
 
         for (int k = 0; k < xyzIj.xyzCount * 3; k += 3) {
             float X = (float) xyzIj.xyz.get(k);
             float Y = (float) xyzIj.xyz.get(k + 1);
             float Z = (float) xyzIj.xyz.get(k + 2);
 
-            Matrix4d mat4 = new Matrix4d();
-            mat4.set(modelView.getDoubleValues());
-            Matrix3d trans = new Matrix3d(mat4);
-            Vector3d pos = new Vector3d(xyzIj.xyz.get(k), xyzIj.xyz.get(k + 1), xyzIj.xyz.get(k + 2));
-            pos = trans.transform(pos);
+            Vector3d pos = new Vector3d(X, Y, Z);
+            pos = viewTworld.transform(pos);
 
-            Log.d("Point", X + ", " + Y + ", " + Z);
-            int pixelX = (int)(fx * (X / Z) + cx);
-            int pixelY = (int)(fy * (Y / Z) + cy);
+            Vector2 screenPos = viewPointToScreen(mIntrinsics, X, Y, Z);
+            int pixelX = (int) screenPos.getX();
+            int pixelY = (int) screenPos.getY();
 
-            //mPointCloudBuffer[pixelY][pixelX * 3] = (float) pos.x;
-            //mPointCloudBuffer[pixelY][pixelX * 3 + 1] = (float) pos.y;
-            //mPointCloudBuffer[pixelY][pixelX * 3 + 2] = (float) pos.z;
-            samplePointCloudAround(pixelX, pixelY, (float) pos.x, (float) pos.y, (float) pos.z);
+            mPointCloudBuffer[pixelY][pixelX * 3] = (float) pos.x;
+            mPointCloudBuffer[pixelY][pixelX * 3 + 1] = (float) pos.y;
+            mPointCloudBuffer[pixelY][pixelX * 3 + 2] = (float) pos.z;
+            //samplePointCloudAround(pixelX, pixelY, (float) pos.x, (float) pos.y, (float) pos.z);
         }
         Log.d("PointCloud", "OK");
     }
@@ -349,6 +378,7 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
                 screenshot = false;
                 GLES20.glViewport(0, 0, this.getViewportWidth(), this.getViewportHeight());
                 Log.d("Screenshot", "Done");
+                savecnt++;
             }
         }
         super.onRenderFrame(gl);
