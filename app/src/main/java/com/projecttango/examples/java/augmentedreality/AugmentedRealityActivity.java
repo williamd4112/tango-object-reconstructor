@@ -28,11 +28,20 @@ import com.google.atap.tangoservice.TangoPoseData;
 import com.google.atap.tangoservice.TangoXyzIjData;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipDescription;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Point;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.opengl.GLSurfaceView;
 import android.os.Bundle;
 import android.os.Environment;
 import android.util.Log;
+import android.view.DragEvent;
+import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.View;
 import android.view.ViewGroup;
@@ -114,6 +123,50 @@ public class AugmentedRealityActivity extends Activity {
 
     private TangoPointCloudManager mPointCloudManager;
 
+    private static class MyDragShadowBuilder extends View.DragShadowBuilder{
+        // The drag shadow image, defined as a drawable thing
+        private static Drawable shadow;
+
+        // Defines the constructor for MyDragShadowBuilder
+        public MyDragShadowBuilder(View v){
+            super(v);
+
+            // Get the background color of dragged object
+            int color = Color.CYAN;
+
+            // Creates a draggable image that will fill the Canvas provided by the system
+            shadow = new ColorDrawable((color));
+        }
+
+        // Defines a callback that sends the drag shadow dimensions and touch point back to the system
+        @Override
+        public void onProvideShadowMetrics(Point size, Point touch){
+            // Define local variables
+            int width, height;
+
+            // Sets the width of the shadow to half the width of the original view
+            width = getView().getWidth()/2;
+
+            // Sets the height of the shadow to half the height of the original view
+            height = getView().getHeight()/2;
+
+            // The drag shadow will fill the Canvas
+            shadow.setBounds(0,0,50,50);
+
+            // Sets the size parameter's width and height values
+            size.set(width, height);
+
+            // Sets the touch point position to be in the middle of the drag shadow
+            touch.set(25,25);
+        }
+
+        @Override
+        public void onDrawShadow(Canvas canvas){
+            // Draws the ColorDrawable in the Canvas passed in from the system
+            shadow.draw(canvas);
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -136,6 +189,57 @@ public class AugmentedRealityActivity extends Activity {
             @Override
             public void onClick(View view) {
                 mRenderer.togglePointcloud();
+            }
+        });
+
+        mSurfaceView.setOnTouchListener(new View.OnTouchListener() {
+
+            @Override
+            public boolean onTouch(View view, MotionEvent motionEvent) {
+                int x = (int) motionEvent.getX();
+                int y = (int) motionEvent.getY();
+                Log.d("Click", x + ", " + y);
+                ClipData.Item item = new ClipData.Item("Dragger");
+                ClipData dragData = new ClipData(
+                        "Dragger",
+                        new String[] {ClipDescription.MIMETYPE_TEXT_PLAIN},item
+                );
+                View.DragShadowBuilder myShadow = new MyDragShadowBuilder(view);
+                mSurfaceView.startDrag(dragData, myShadow, null, 0);
+                return false;
+            }
+        });
+
+        mSurfaceView.setOnDragListener(new View.OnDragListener() {
+            @Override
+            public boolean onDrag(View view, DragEvent event) {
+                int action = event.getAction();
+                int x = (int) event.getX();
+                int y = (int) event.getY();
+                switch (event.getAction()) {
+                    case DragEvent.ACTION_DRAG_STARTED:
+                        Log.d("DRAG_STARTED", x + ", " + y);
+                        break;
+                    case DragEvent.ACTION_DRAG_ENTERED:
+                        Log.d("DRAG_ENTERED", x + ", " + y);
+                        break;
+                    case DragEvent.ACTION_DRAG_EXITED:
+                        Log.d("DRAG_EXIT", x + ", " + y);
+                        break;
+                    case DragEvent.ACTION_DROP:
+                        Log.d("DRAG_DROP", x + ", " + y);
+                        break;
+                    case DragEvent.ACTION_DRAG_ENDED:
+                        Log.d("DRAG_END", x + ", " + y);
+                        break;
+                    case DragEvent.ACTION_DRAG_LOCATION:
+                        Log.d("DRAG_LOC", x + ", " + y);
+                        break;
+                    default:
+                        Log.d("UNKON", "");
+                        break;
+                }
+                return true;
             }
         });
     }
@@ -257,7 +361,7 @@ public class AugmentedRealityActivity extends Activity {
                 synchronized (AugmentedRealityRenderer.lock) {
                     mPointCloudManager.updateXyzIj(xyzIj);
                 }
-                Log.d("XYZIJ", "Update");
+                //Log.d("XYZIJ", "Update");
             }
 
             @Override

@@ -105,6 +105,7 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
     private static int framebufferWidth = 1920;
     private static int framebufferHeight = 942;
 
+    private UIUtil.Rect selectRect;
     private PointCloud mPointCloud;
     private TangoXyzIjData mXYZij;
     private TangoPoseData mPose;
@@ -263,6 +264,7 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
 
         mXYZij = xyzIjData;
         mPose = devicePose;
+
     }
 
     @Override
