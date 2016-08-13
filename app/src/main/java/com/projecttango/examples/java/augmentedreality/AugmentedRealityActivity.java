@@ -23,8 +23,10 @@ import com.google.atap.tangoservice.TangoConfig;
 import com.google.atap.tangoservice.TangoCoordinateFramePair;
 import com.google.atap.tangoservice.TangoErrorException;
 import com.google.atap.tangoservice.TangoEvent;
+import com.google.atap.tangoservice.TangoInvalidException;
 import com.google.atap.tangoservice.TangoOutOfDateException;
 import com.google.atap.tangoservice.TangoPoseData;
+import com.google.atap.tangoservice.TangoTextureCameraPreview;
 import com.google.atap.tangoservice.TangoXyzIjData;
 
 import android.app.Activity;
@@ -52,12 +54,14 @@ import org.joml.Matrix3d;
 import org.joml.Matrix4d;
 import org.joml.Vector3d;
 import org.rajawali3d.math.Matrix4;
+import org.rajawali3d.math.vector.Vector2;
 import org.rajawali3d.scene.ASceneFrameCallback;
 import org.rajawali3d.surface.RajawaliSurfaceView;
 
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.lang.reflect.Array;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.channels.FileChannel;
@@ -66,9 +70,11 @@ import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import com.google.atap.tangoservice.experimental.TangoMesh;
 import com.projecttango.rajawali.DeviceExtrinsics;
 import com.projecttango.tangosupport.TangoPointCloudManager;
 import com.projecttango.tangosupport.TangoSupport;
+import com.projecttango.tangoutils.TangoPoseUtilities;
 
 /**
  * This is a simple example that shows how to use the Tango APIs to create an augmented reality (AR)
@@ -122,6 +128,35 @@ public class AugmentedRealityActivity extends Activity {
     private double mRgbTimestampGlThread;
 
     private TangoPointCloudManager mPointCloudManager;
+
+    private ArrayList<Vector2> mDragBuffer = new ArrayList<Vector2>();
+
+    public void putDragPos(int x, int y)
+    {
+        if(!mDragBuffer.isEmpty())
+        {
+            Vector2 pre = mDragBuffer.get(mDragBuffer.size() - 1);
+            if((int)pre.getX() == x && (int)pre.getY() == y)
+                return;
+        }
+        mDragBuffer.add(new Vector2(x, y));
+    }
+
+    public void saveDragBuffer()
+    {
+        int minX = 0x7fffffff, minY = 0x7fffffff;
+        int maxX = 0, maxY = 0;
+        for(Vector2 p : mDragBuffer)
+        {
+            minX = (int)Math.min(minX, p.getX());
+            minY = (int)Math.min(minY, p.getY());
+            maxX = (int)Math.max(maxX, p.getX());
+            maxY = (int)Math.max(maxY, p.getY());
+        }
+        Log.d("Bound", minX + ", " + minY + " : " + maxX + ", " + maxY);
+        mRenderer.setBound(new Vector2(minX, minY), new Vector2(maxX, maxY));
+        mDragBuffer.clear();
+    }
 
     private static class MyDragShadowBuilder extends View.DragShadowBuilder{
         // The drag shadow image, defined as a drawable thing
@@ -222,18 +257,23 @@ public class AugmentedRealityActivity extends Activity {
                         break;
                     case DragEvent.ACTION_DRAG_ENTERED:
                         Log.d("DRAG_ENTERED", x + ", " + y);
+                        putDragPos(x, y);
                         break;
                     case DragEvent.ACTION_DRAG_EXITED:
                         Log.d("DRAG_EXIT", x + ", " + y);
                         break;
                     case DragEvent.ACTION_DROP:
                         Log.d("DRAG_DROP", x + ", " + y);
+                        putDragPos(x, y);
+
                         break;
                     case DragEvent.ACTION_DRAG_ENDED:
                         Log.d("DRAG_END", x + ", " + y);
+                        saveDragBuffer();
                         break;
                     case DragEvent.ACTION_DRAG_LOCATION:
-                        Log.d("DRAG_LOC", x + ", " + y);
+                        //Log.d("DRAG_LOC", x + ", " + y);
+
                         break;
                     default:
                         Log.d("UNKON", "");
@@ -349,6 +389,7 @@ public class AugmentedRealityActivity extends Activity {
         ArrayList<TangoCoordinateFramePair> framePairs = new ArrayList<TangoCoordinateFramePair>();
         framePairs.add(new TangoCoordinateFramePair(TangoPoseData.COORDINATE_FRAME_START_OF_SERVICE,
                 TangoPoseData.COORDINATE_FRAME_DEVICE));
+
         mTango.connectListener(framePairs, new OnTangoUpdateListener() {
             @Override
             public void onPoseAvailable(TangoPoseData pose) {
@@ -384,6 +425,7 @@ public class AugmentedRealityActivity extends Activity {
                     if (mSurfaceView.getRenderMode() != GLSurfaceView.RENDERMODE_WHEN_DIRTY) {
                         mSurfaceView.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
                     }
+
 
                     // Mark a camera frame is available for rendering in the OpenGL thread.
                     mIsFrameAvailableTangoThread.set(true);

@@ -64,6 +64,7 @@ import com.projecttango.rajawali.DeviceExtrinsics;
 import com.projecttango.rajawali.Pose;
 import com.projecttango.rajawali.ScenePoseCalculator;
 import com.projecttango.rajawali.renderables.PointCloud;
+import com.projecttango.tangosupport.TangoSupport;
 
 import java.io.DataOutputStream;
 import java.io.File;
@@ -86,6 +87,11 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
     private int savecnt = 0;
     public static Object lock = new Object();
 
+    static class Bound
+    {
+        Vector2 min, max;
+    }
+
     static class WorldPointCloudSet
     {
         Matrix4 viewTworld;
@@ -105,7 +111,7 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
     private static int framebufferWidth = 1920;
     private static int framebufferHeight = 942;
 
-    private UIUtil.Rect selectRect;
+    private Bound mSelectBound = new Bound();
     private PointCloud mPointCloud;
     private TangoXyzIjData mXYZij;
     private TangoPoseData mPose;
@@ -114,6 +120,12 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
 
     public AugmentedRealityRenderer(Context context) {
         super(context);
+    }
+
+    public void setBound(Vector2 min, Vector2 max)
+    {
+        mSelectBound.min = min;
+        mSelectBound.max = max;
     }
 
     public void setScreenShot()
@@ -129,7 +141,7 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
         float cy = (float) intrinsics.cy;
 
         int pixelX = (int)(fx * (x / z) + cx);
-        int pixelY = (int)(fy * (x / z) + cy);
+        int pixelY = (int)(fy * (y / z) + cy);
 
         return new Vector2(pixelX, pixelY);
     }
@@ -175,6 +187,7 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
         Log.d("PointCloud", xyzIj.xyzCount + "");
         Log.d("Intrinsic", mIntrinsics.width + ", " + mIntrinsics.height);
 
+
         FloatBuffer newXyz = FloatBuffer.allocate(xyzIj.xyzCount * 3);
         PointCloud newPointCloud = new PointCloud(MAX_NUMBER_OF_POINTS);
 
@@ -188,6 +201,12 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
             Vector2 screenPos = viewPointToScreen(mIntrinsics, x, y, z);
             int pixelX = (int) screenPos.getX();
             int pixelY = (int) screenPos.getY();
+
+            if(!isInRegion(pixelX, pixelY,
+                    (int)mSelectBound.min.getX(), (int)mSelectBound.min.getY(),
+                    (int)mSelectBound.max.getX(), (int)mSelectBound.max.getY()))
+                continue;
+
             savePointPositionToBuffer(pixelX, pixelY, pos);
 
             newXyz.put(x);
@@ -229,6 +248,9 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
         getCurrentCamera().setNearPlane(CAMERA_NEAR);
         getCurrentCamera().setFarPlane(CAMERA_FAR);
         getCurrentCamera().setFieldOfView(37.5);
+
+        mSelectBound.min = new Vector2(0, 0);
+        mSelectBound.max = new Vector2(0x7fffffff, 0x7fffffff);
     }
 
     /**
