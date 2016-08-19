@@ -122,10 +122,24 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
         super(context);
     }
 
+    public Vector2 relocate(Vector2 p, int ow, int oh, int nw, int nh)
+    {
+        int x = (int)((p.getX() / (float)ow) * nw);
+        int y = (int)((p.getY() / (float)oh) * nh);
+
+        return new Vector2(x, y);
+    }
+
     public void setBound(Vector2 min, Vector2 max)
     {
-        mSelectBound.min = min;
-        mSelectBound.max = max;
+        Log.d("SetBound before", min.getX() + ", " + min.getY() + " : " +
+                max.getX() + ", " + max.getY());
+
+        mSelectBound.min = relocate(min, 1920, 942, 1280, 720);
+        mSelectBound.max = relocate(max, 1920, 942, 1280, 720);
+
+        Log.d("SetBound after", mSelectBound.min.getX() + ", " + mSelectBound.min.getY() + " : " +
+                mSelectBound.max.getX() + ", " + mSelectBound.max.getY());
     }
 
     public void setScreenShot()
@@ -192,6 +206,8 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
         PointCloud newPointCloud = new PointCloud(MAX_NUMBER_OF_POINTS);
 
         clearPositionBuffer();
+
+        int maxX = 0, maxY = 0;
         for (int k = 0; k < xyzIj.xyzCount * 3; k += 3) {
             float x = (float) xyzIj.xyz.get(k);
             float y = (float) xyzIj.xyz.get(k + 1);
@@ -201,6 +217,8 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
             Vector2 screenPos = viewPointToScreen(mIntrinsics, x, y, z);
             int pixelX = (int) screenPos.getX();
             int pixelY = (int) screenPos.getY();
+            maxX = Math.max(pixelX, maxX);
+            maxY = Math.max(pixelY, maxY);
 
             if(!isInRegion(pixelX, pixelY,
                     (int)mSelectBound.min.getX(), (int)mSelectBound.min.getY(),
@@ -213,7 +231,7 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
             newXyz.put(y);
             newXyz.put(z);
         }
-
+        Log.d("MAX", maxX + ", " + maxY);
         newPointCloud.updateCloud(xyzIj.xyzCount, newXyz);
         newPointCloud.setPosition(pointCloud.getPosition());
         newPointCloud.setOrientation(pointCloud.getOrientation());
