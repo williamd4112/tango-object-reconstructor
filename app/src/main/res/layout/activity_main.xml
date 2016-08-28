@@ -27,9 +27,15 @@
     <Button
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Do"
+        android:text="Capture"
         android:id="@+id/button2"
         android:layout_gravity="center_horizontal|bottom" />
+    <Button
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Merge"
+        android:id="@+id/button3"
+        android:layout_gravity="right|bottom" />
     <Button
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"

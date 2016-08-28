@@ -227,6 +227,15 @@ public class AugmentedRealityActivity extends Activity {
             }
         });
 
+        Button mergeButton = (Button) findViewById(R.id.button3);
+        mergeButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                mRenderer.setMerge();
+
+            }
+        });
+
         mSurfaceView.setOnTouchListener(new View.OnTouchListener() {
 
             @Override

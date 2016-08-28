@@ -50,6 +50,8 @@ import org.rajawali3d.math.Matrix4;
 import org.rajawali3d.math.Quaternion;
 import org.rajawali3d.math.vector.Vector2;
 import org.rajawali3d.math.vector.Vector3;
+import org.rajawali3d.primitives.Cube;
+import org.rajawali3d.primitives.Plane;
 import org.rajawali3d.primitives.ScreenQuad;
 import org.rajawali3d.primitives.Sphere;
 import org.rajawali3d.renderer.RajawaliRenderer;
@@ -69,11 +71,13 @@ import com.projecttango.tangosupport.TangoSupport;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.lang.reflect.Array;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.ShortBuffer;
 import java.nio.channels.FileChannel;
+import java.util.ArrayList;
 import java.util.Arrays;
 
 /**
@@ -90,12 +94,27 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
     static class Bound
     {
         Vector2 min, max;
+
+        public static Bound copyOf(Bound bound)
+        {
+            Bound tmp = new Bound();
+            tmp.min = new Vector2(bound.min.getX(), bound.min.getY());
+            tmp.max = new Vector2(bound.max.getX(), bound.max.getY());
+            return tmp;
+        }
     }
 
-    static class WorldPointCloudSet
+    static class KeyFrame
     {
-        Matrix4 viewTworld;
-    }
+        PointCloud pointCloud;
+        ArrayList<Vector3> vertices = new ArrayList<Vector3>();
+
+        public KeyFrame(PointCloud pointCloud, ArrayList<Vector3> vertices)
+        {
+            this.pointCloud = pointCloud;
+            this.vertices = vertices;
+        }
+    };
 
     private static final float CAMERA_NEAR = 0.01f;
     private static final float CAMERA_FAR = 200f;
@@ -108,6 +127,7 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
     private boolean mSceneCameraConfigured;
 
     private boolean screenshot;
+    private boolean merge;
     private static int framebufferWidth = 1920;
     private static int framebufferHeight = 942;
 
@@ -117,6 +137,7 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
     private TangoPoseData mPose;
     private TangoCameraIntrinsics mIntrinsics;
     private Vector3[][] mPositionBuffer = new Vector3[ framebufferHeight ][ framebufferWidth ];
+    private ArrayList<KeyFrame> keyFrames = new ArrayList<KeyFrame>();
 
     public AugmentedRealityRenderer(Context context) {
         super(context);
@@ -145,6 +166,11 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
     public void setScreenShot()
     {
         screenshot = true;
+    }
+
+    public void setMerge()
+    {
+        merge = true;
     }
 
     private Vector2 viewPointToScreen(TangoCameraIntrinsics intrinsics, float x, float y, float z)
@@ -196,14 +222,67 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
         }
     }
 
+    private void addCube(Vector3 pos, Vector3 size)
+    {
+        // Set-up a material: green with application of the light and
+        // instructions.
+        Material material = new Material();
+        material.setColor(0xff009900);
+        //material.enableLighting(true);
+        //material.setDiffuseMethod(new DiffuseMethod.Lambert());
+
+        Cube mObject = new Cube(2.0f);
+        mObject.setMaterial(material);
+        mObject.setPosition(pos);
+        mObject.setScale(size);
+        mObject.setRotation(Vector3.Axis.Z, 180);
+        getCurrentScene().addChild(mObject);
+    }
+
+    private void mergeKeyframe()
+    {
+        int count = 0;
+        Vector3 max = new Vector3(-Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE);
+        Vector3 mass = new Vector3(0, 0, 0);
+        for(KeyFrame keyFrame : keyFrames) {
+            count += keyFrame.vertices.size();
+            for(Vector3 vertex : keyFrame.vertices) {
+                mass.add(vertex);
+                max.x = Math.max(vertex.x, max.x);
+                max.y = Math.max(vertex.y, max.y);
+                max.z = Math.max(vertex.z, max.z);
+            }
+        }
+
+        mass.divide((float)count);
+        max.x = Math.abs(max.x - mass.x);
+        max.y = Math.abs(max.y - mass.y);
+        max.z = Math.abs(max.z - mass.z);
+        addCube(mass, max);
+        Log.d("Merge-Mass", mass.x + ", " + mass.y + ", " + mass.z);
+        Log.d("Merge-Max", max.x + ", " + max.y + ", " + max.z);
+    }
+
+    private Vector3 toWorld(Matrix4 transformMat4, float x, float y, float z)
+    {
+        //Matrix4 transformMat4 = mPointCloud.getModelMatrix();
+        Matrix4 modelMat4 = new Matrix4();
+        modelMat4.setAll(
+                new Vector3(x, y, z),
+                new Vector3(1.0, 1.0, 1.0),
+                new Quaternion(new Vector3(0, 1, 0), 0));
+        modelMat4.leftMultiply(transformMat4);
+        return modelMat4.getTranslation();
+    }
+
     private void savePointCloud(PointCloud pointCloud, TangoXyzIjData xyzIj, TangoPoseData pose)
     {
         Log.d("PointCloud", xyzIj.xyzCount + "");
         Log.d("Intrinsic", mIntrinsics.width + ", " + mIntrinsics.height);
 
-
         FloatBuffer newXyz = FloatBuffer.allocate(xyzIj.xyzCount * 3);
         PointCloud newPointCloud = new PointCloud(MAX_NUMBER_OF_POINTS);
+        ArrayList<Vector3> vertices = new ArrayList<Vector3>();
 
         clearPositionBuffer();
 
@@ -230,11 +309,15 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
             newXyz.put(x);
             newXyz.put(y);
             newXyz.put(z);
+
+            vertices.add(toWorld(mPointCloud.getModelMatrix(), x, y, z));
         }
         Log.d("MAX", maxX + ", " + maxY);
         newPointCloud.updateCloud(xyzIj.xyzCount, newXyz);
         newPointCloud.setPosition(pointCloud.getPosition());
         newPointCloud.setOrientation(pointCloud.getOrientation());
+
+        keyFrames.add(new KeyFrame(newPointCloud, vertices));
 
         getCurrentScene().addChild(newPointCloud);
 
@@ -261,6 +344,13 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
         }
         getCurrentScene().addChildAt(backgroundQuad, 0);
 
+        // Add a directional light in an arbitrary direction.
+        DirectionalLight light = new DirectionalLight(1, 0.2, -1);
+        light.setColor(1, 1, 1);
+        light.setPower(0.8f);
+        light.setPosition(3, 2, 4);
+        getCurrentScene().addLight(light);
+
         mPointCloud = new PointCloud(MAX_NUMBER_OF_POINTS);
         getCurrentScene().addChild(mPointCloud);
         getCurrentCamera().setNearPlane(CAMERA_NEAR);
@@ -269,6 +359,8 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
 
         mSelectBound.min = new Vector2(0, 0);
         mSelectBound.max = new Vector2(0x7fffffff, 0x7fffffff);
+
+        //addCube(new Vector3(0, 0, -3));
     }
 
     /**
@@ -315,6 +407,12 @@ public class AugmentedRealityRenderer extends RajawaliRenderer {
                 savePointCloud(mPointCloud, mXYZij, mPose);
                 screenshot = false;
                 Log.d("Keyframe", "Done");
+            }
+
+            if(merge){
+                mergeKeyframe();
+                Log.d("Merge", "Done");
+                merge = false;
             }
         }
         super.onRenderFrame(gl);
